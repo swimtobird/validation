@@ -20,13 +20,19 @@ class ValidationServerProvider implements ServiceProviderInterface
      */
     public function register(Container $container)
     {
-        $container->get('dispatcher')->withAddMiddleware(new ValidationMiddleware());
+        /*
+         * register middleware
+         */
+        $container->get('dispatcher')->before(new ValidationMiddleware());
 
+        /*
+         * register extension
+         */
         Validator::addExtension('exists', function ($field, $value, array $parameters = []) {
             // [{connection}.]{database},field[,conditionField1,conditionValue2]
             $dsn = array_shift($parameters);
             $mainKey = 0 === count($parameters) ? 'id' : array_shift($parameters);
-            false === strpos($dsn, '.') && ($dsn = 'default.' . $dsn);
+            false === strpos($dsn, '.') && ($dsn = 'default.'.$dsn);
             list($connection, $table) = explode('.', $dsn);
             $condition = [];
             $parameters = array_chunk($parameters, 2);
@@ -36,7 +42,26 @@ class ValidationServerProvider implements ServiceProviderInterface
                 }
                 $condition[$item[0]] = $item[1];
             }
-            return eloquent_db($connection)->table($table)->where($mainKey, $value)->where($condition)->exists();
+
+            $condition[$mainKey] = $value;
+
+            ksort($condition);
+
+            $cacheKeyName = app()->getName()
+                .".validate_exist.{$connection}.{$table}."
+                .md5(http_build_query($condition));
+
+            $item = cache()->getItem($cacheKeyName);
+
+            if (!$item->isHit()) {
+                $item->set(
+                    eloquent_db($connection)->table($table)->where($condition)->exists()
+                );
+                $item->expiresAfter(300);
+                cache()->save($item);
+            }
+
+            return $item->get();
         });
     }
 }
